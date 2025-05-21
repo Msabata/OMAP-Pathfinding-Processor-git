@@ -1,0 +1,776 @@
+﻿#pragma once
+// src/gui/main_window.hpp
+#ifndef APP_MAIN_WINDOW_HPP
+#define APP_MAIN_WINDOW_HPP
+
+#include <QMainWindow>
+#include <memory>
+#include <QCloseEvent>
+
+// Forward declarations if needed
+class QAction;
+class QSettings;
+class QSpinBox;
+class QDoubleSpinBox;
+class QPushButton;
+class QGroupBox;
+
+namespace app {
+
+    class MainWindow : public QMainWindow {
+        Q_OBJECT
+
+    public:
+        explicit MainWindow(QWidget* parent = nullptr);
+        ~MainWindow() override;
+
+    protected:
+        void closeEvent(QCloseEvent* event) override;
+
+    private slots:
+        void onImportClicked();
+        void onCalculateClicked();
+        void onExportClicked();
+        void onMapSettingsClicked();
+        void onAlgorithmSettingsClicked();
+        void onToggleDarkMode(bool checked);
+        void onAbout();
+        void onShowUsage();
+        void onGenerateMapClicked(); // Slot for the "Run Test" button
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> m_impl;
+
+        // Private Helper Methods (declarations remain the same)
+        void createActions();
+        void createToolBars();
+        void createMenus();
+        void createSettingsDockWidget();
+        QWidget* createMapSettingsPanel();
+        QWidget* createAlgorithmSettingsPanel();
+        QString openFileDialog(bool forSaving);
+        void loadSettings();
+        void saveSettings();
+        void applyStylesheet(bool dark);
+
+    }; // class MainWindow
+
+} // namespace app
+
+#endif // APP_MAIN_WINDOW_HPP
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+// main_window.cpp
+///////////////////////////////////////////////////////////////////////////////
+
+//#include "algoritms/map_generator.hpp" // Include Map Generator features
+#include "map/ParallelProcessorFlags.hpp"
+#include "algoritms/AStarToblerSampled.hpp"     // Include A* features
+#include "main_window.hpp"
+
+// --- Qt Headers ---
+#include <QAction>
+#include <QApplication>
+#include <QCloseEvent>
+#include <QComboBox>
+#include <QDir>
+#include <QDockWidget>
+#include <QElapsedTimer> // Not needed for simple test
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFormLayout>
+#include <QFrame>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QIcon>
+#include <QLabel>
+#include <QMenu>
+#include <QMenuBar>
+#include <QMessageBox> // Needed for the message box
+#include <QPushButton>
+#include <QSettings>
+#include <QSizePolicy>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QStackedWidget>
+#include <QStatusBar>
+#include <QStyle>
+#include <QToolBar>
+#include <QVBoxLayout>
+#include <QWidget>
+#include <QDebug>
+
+// --- Standard Headers ---
+#include <thread>     // Temporarily commented out
+#include <vector>     // Still needed for mapWeights member
+#include <random>     // Temporarily commented out
+#include <chrono>     // Temporarily commented out
+#include <memory>
+#include <algorithm>
+#include <exception>
+#include <string>
+
+
+namespace app {
+
+    // =========================================================================
+    // Stylesheets (light & dark versions)
+    // =========================================================================
+    const QString lightStylesheet = R"(
+        /* --- Base --- */
+        QMainWindow, QDialog { background-color: #f4f4f4; }
+        QWidget { color: #333333; font-size: 10pt; }
+
+        /* --- Buttons --- */
+        QPushButton {
+            background-color: #0078d7; color: white;
+            border: 1px solid #005a9e; padding: 8px 16px; border-radius: 4px;
+            min-height: 20px;
+        }
+        QPushButton:hover { background-color: #005a9e; }
+        QPushButton:pressed { background-color: #003c6a; }
+        QPushButton:disabled { background-color: #cccccc; color: #666666; border-color: #aaaaaa; }
+
+        /* --- Toolbar Buttons --- */
+        QToolBar { background-color: #e8e8e8; border-bottom: 1px solid #cccccc; padding: 2px; }
+        QToolButton {
+            background-color: transparent; color: #333333; border: 1px solid transparent;
+            padding: 5px 8px; margin: 1px; border-radius: 4px; min-height: 20px;
+        }
+        QToolButton:hover { background-color: #cce5ff; border: 1px solid #a8d1ff; color: #003c6a; }
+        QToolButton:pressed { background-color: #a8d1ff; border: 1px solid #84b8ff; }
+        QToolButton:checked { background-color: #e0e0e0; border: 1px solid #b0b0b0; }
+        QToolButton:disabled { background-color: transparent; color: #aaaaaa; border-color: transparent; }
+
+        /* --- Inputs --- */
+        QSpinBox, QComboBox, QLineEdit, QTextEdit, QDoubleSpinBox {
+            padding: 4px; border: 1px solid #c5c5c5; border-radius: 3px; min-height: 20px;
+            background-color: #ffffff; color: #333333;
+        }
+        QSpinBox::up-button, QSpinBox::down-button,
+        QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 16px; }
+        QComboBox::drop-down { border: none; }
+        QComboBox::down-arrow { image: url(:/qt-project.org/styles/commonstyle/images/downarraow-16.png); }
+
+        /* --- Containers & Misc --- */
+        QDockWidget { background-color: #fafafa; border: none; }
+        QDockWidget::title { background-color: #e1e1e1; text-align: left; padding: 5px; border: 1px solid #c5c5c5; }
+        QWidget#SettingsDockContent { background-color: #fafafa; }
+        QStatusBar { background-color: #e1e1e1; color: #333; font-size: 9pt; }
+        QMenuBar { background-color: #e8e8e8; }
+        QMenu { background-color: #ffffff; border: 1px solid #cccccc; }
+        QMenu::item:selected { background-color: #0078d7; color: white; }
+        QGroupBox { border: 1px solid #c5c5c5; border-radius: 4px; margin-top: 10px; font-weight: bold; }
+        QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 5px; left: 10px; background-color: #f4f4f4; }
+        QTabWidget::pane { border: 1px solid #c5c5c5; border-top: none; }
+        QTabBar::tab { padding: 8px 15px; border: 1px solid #c5c5c5; border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; background-color: #e1e1e1; margin-right: 2px;}
+        QTabBar::tab:selected { background-color: #fafafa; }
+        QTabBar::tab:!selected:hover { background-color: #eaeaea; }
+        QPushButton#GeneratorSettingsButton, QPushButton#SolverSettingsButton { /* Dock tab buttons */
+            border-radius: 0; border:none; border-bottom: 2px solid transparent; background: #e8e8e8; padding: 6px 10px; color: #333;
+        }
+        QPushButton#GeneratorSettingsButton:hover, QPushButton#SolverSettingsButton:hover { background-color: #f0f0f0; }
+        QPushButton#GeneratorSettingsButton:checked, QPushButton#SolverSettingsButton:checked { border-bottom-color: #0078d7; background: #fafafa; font-weight: bold; color: #003c6a; }
+    )";
+
+    const QString darkStylesheet = R"(
+        /* --- Base --- */
+        QMainWindow, QDialog { background-color: #2d2d2d; }
+        QWidget { color: #e0e0e0; font-size: 10pt; }
+
+        /* --- Buttons --- */
+        QPushButton {
+            background-color: #0078d7; color: white;
+            border: 1px solid #005a9e; padding: 8px 16px; border-radius: 4px;
+            min-height: 20px;
+        }
+        QPushButton:hover { background-color: #108de0; }
+        QPushButton:pressed { background-color: #005a9e; }
+        QPushButton:disabled { background-color: #454545; color: #888888; border-color: #555555; }
+
+        /* --- Toolbar Buttons --- */
+         QToolBar { background-color: #3a3a3a; border-bottom: 1px solid #4a4a4a; padding: 2px; }
+         QToolButton {
+            background-color: transparent; color: #e0e0e0; border: 1px solid transparent;
+            padding: 5px 8px; margin: 1px; border-radius: 4px; min-height: 20px;
+        }
+        QToolButton:hover { background-color: #555555; border: 1px solid #6a6a6a; color: #ffffff; }
+        QToolButton:pressed { background-color: #606060; border: 1px solid #777777; }
+        QToolButton:checked { background-color: #484848; border: 1px solid #5a5a5a; }
+        QToolButton:disabled { background-color: transparent; color: #777777; border-color: transparent; }
+
+        /* --- Inputs --- */
+        QSpinBox, QComboBox, QLineEdit, QTextEdit, QDoubleSpinBox {
+            padding: 4px; border: 1px solid #555555; border-radius: 3px; min-height: 20px;
+            background-color: #3c3c3c; color: #e0e0e0;
+        }
+        QSpinBox::up-button, QSpinBox::down-button,
+        QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { background-color: #505050; border-left: 1px solid #555555;}
+        QComboBox QAbstractItemView { background-color: #3c3c3c; border: 1px solid #555555; selection-background-color: #0078d7; }
+
+        /* --- Containers & Misc --- */
+        QDockWidget { background-color: #353535; border: none; }
+        QDockWidget::title { background-color: #404040; text-align: left; padding: 5px; border: 1px solid #4a4a4a; color: #e0e0e0;}
+        QWidget#SettingsDockContent { background-color: #353535; }
+        QStatusBar { background-color: #404040; color: #cccccc; font-size: 9pt; }
+        QMenuBar { background-color: #3a3a3a; color: #e0e0e0; }
+        QMenu { background-color: #3c3c3c; border: 1px solid #555555; color: #e0e0e0;}
+        QMenu::item:selected { background-color: #0078d7; color: white; }
+        QGroupBox { border: 1px solid #555555; border-radius: 4px; margin-top: 10px; font-weight: bold; color: #e0e0e0;}
+        QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 5px; left: 10px; background-color: #2d2d2d; color: #e0e0e0;}
+        QTabWidget::pane { border: 1px solid #555555; border-top: none; }
+        QTabBar::tab { padding: 8px 15px; border: 1px solid #555555; border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; background-color: #404040; margin-right: 2px; color: #bbbbbb;}
+        QTabBar::tab:selected { background-color: #353535; color: #e0e0e0; }
+        QTabBar::tab:!selected:hover { background-color: #484848; }
+        QPushButton#GeneratorSettingsButton, QPushButton#SolverSettingsButton { /* Dock tab buttons */
+             border-radius: 0; border:none; border-bottom: 2px solid transparent;
+             background: #3a3a3a; padding: 6px 10px; color: #e0e0e0; /* Brighter base text */
+        }
+         QPushButton#GeneratorSettingsButton:hover, QPushButton#SolverSettingsButton:hover {
+             background-color: #484848; color: #ffffff; /* White text on hover */
+        }
+        QPushButton#GeneratorSettingsButton:checked, QPushButton#SolverSettingsButton:checked {
+             border-bottom-color: #0078d7; background: #353535; font-weight: bold;
+             color: #ffffff; /* White selected text */
+        }
+    )";
+
+    // =========================================================================
+    // Implementation Struct
+    // =========================================================================
+    struct MainWindow::Impl {
+        // UI Elements
+        QWidget* centralWidget{ nullptr };
+        QPushButton* importButton{ nullptr };
+        QPushButton* calculateButton{ nullptr };
+        QPushButton* exportButton{ nullptr };
+        QPushButton* testerButton{ nullptr };
+        QStatusBar* statusBar{ nullptr };
+        QDockWidget* settingsDockWidget{ nullptr };
+        QStackedWidget* settingsStack{ nullptr };
+        // Actions
+        QAction* mapSettingsAction{ nullptr };
+        QAction* algorithmSettingsAction{ nullptr };
+        QAction* darkModeAction{ nullptr };
+        QAction* aboutAction{ nullptr };
+        QAction* usageAction{ nullptr };
+        // Settings Widgets
+        QComboBox* algorithmComboBox{ nullptr };
+        QSpinBox* gridSizeSpinBox{ nullptr };
+        QSpinBox* numPolygonsSpinBox{ nullptr };
+        QSpinBox* numThreadsSpinBox{ nullptr };
+        QDoubleSpinBox* backgroundValueSpinBox{ nullptr };
+        QDoubleSpinBox* obstacleValueSpinBox{ nullptr };
+        QDoubleSpinBox* minWeightSpinBox{ nullptr };
+        QDoubleSpinBox* maxWeightSpinBox{ nullptr };
+        // State
+        QSettings* settings{ nullptr };
+        QString currentFilePath;
+        std::string selectedAlgorithm{ "Optimized A* (Float)" };
+        // Map Data
+        std::vector<float> currentMapWeights;
+        std::size_t currentMapWidth = 0;
+        std::size_t currentMapHeight = 0;
+    };
+
+
+    // =========================================================================
+    // Constructor & Destructor
+    // =========================================================================
+    MainWindow::MainWindow(QWidget* parent)
+        : QMainWindow(parent)
+        , m_impl(std::make_unique<Impl>())
+    {
+        // ... (Constructor code remains the same, ensure testerButton connects to onGenerateMapClicked) ...
+        setWindowTitle("Pathfinding Map Generator & Solver");
+        resize(900, 700);
+        m_impl->settings = new QSettings("MyCompany", "PathfindingApp", this);
+
+        m_impl->centralWidget = new QWidget(this);
+        auto* centralLayout = new QVBoxLayout(m_impl->centralWidget);
+        m_impl->importButton = new QPushButton(this->style()->standardIcon(QStyle::SP_DialogOpenButton), " Import Map XML", m_impl->centralWidget);
+        m_impl->testerButton = new QPushButton(this->style()->standardIcon(QStyle::SP_MediaSeekForward), " Run Test", m_impl->centralWidget);
+        m_impl->calculateButton = new QPushButton(this->style()->standardIcon(QStyle::SP_MediaPlay), " Calculate Path", m_impl->centralWidget);
+        m_impl->exportButton = new QPushButton(this->style()->standardIcon(QStyle::SP_DialogSaveButton), " Export Results", m_impl->centralWidget);
+        m_impl->importButton->setToolTip("Import existing map data from an XML file.");
+        m_impl->testerButton->setToolTip("Generate map & find path using current settings.");
+        m_impl->calculateButton->setToolTip("Calculate the path on the current map (generate/import first).");
+        m_impl->exportButton->setToolTip("Export the calculated path to an XML file.");
+        auto* mainButtonsLayout = new QHBoxLayout();
+        mainButtonsLayout->addWidget(m_impl->importButton);
+        mainButtonsLayout->addWidget(m_impl->testerButton);
+        mainButtonsLayout->addWidget(m_impl->calculateButton);
+        mainButtonsLayout->addWidget(m_impl->exportButton);
+        mainButtonsLayout->addStretch();
+        centralLayout->addLayout(mainButtonsLayout);
+        QLabel* mapPlaceholder = new QLabel("Map Area (Visualization Placeholder)");
+        mapPlaceholder->setAlignment(Qt::AlignCenter);
+        mapPlaceholder->setFrameStyle(QFrame::Panel | QFrame::Sunken);
+        mapPlaceholder->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        mapPlaceholder->setMinimumSize(400, 300);
+        centralLayout->addWidget(mapPlaceholder);
+        setCentralWidget(m_impl->centralWidget);
+        m_impl->statusBar = new QStatusBar(this);
+        setStatusBar(m_impl->statusBar);
+        createActions();
+        createToolBars();
+        createMenus();
+        createSettingsDockWidget();
+        connect(m_impl->importButton, &QPushButton::clicked, this, &MainWindow::onImportClicked);
+        connect(m_impl->testerButton, &QPushButton::clicked, this, &MainWindow::onGenerateMapClicked); // Connects to the restored logic
+        connect(m_impl->calculateButton, &QPushButton::clicked, this, &MainWindow::onCalculateClicked);
+        connect(m_impl->exportButton, &QPushButton::clicked, this, &MainWindow::onExportClicked);
+        connect(m_impl->mapSettingsAction, &QAction::triggered, this, &MainWindow::onMapSettingsClicked);
+        connect(m_impl->algorithmSettingsAction, &QAction::triggered, this, &MainWindow::onAlgorithmSettingsClicked);
+        connect(m_impl->darkModeAction, &QAction::toggled, this, &MainWindow::onToggleDarkMode);
+        connect(m_impl->aboutAction, &QAction::triggered, this, &MainWindow::onAbout);
+        connect(m_impl->usageAction, &QAction::triggered, this, &MainWindow::onShowUsage);
+        m_impl->calculateButton->setEnabled(false);
+        m_impl->exportButton->setEnabled(false);
+        loadSettings();
+    }
+
+    MainWindow::~MainWindow() = default;
+
+    // =========================================================================
+    // Event Overrides
+    // =========================================================================
+    void MainWindow::closeEvent(QCloseEvent* event)
+    {
+        saveSettings();
+        QMainWindow::closeEvent(event);
+    }
+
+    // =========================================================================
+    // Private Helper Methods - UI Creation
+    // =========================================================================
+    void MainWindow::createActions() {
+        QIcon mapIcon = this->style()->standardIcon(QStyle::SP_FileDialogDetailedView);
+        m_impl->mapSettingsAction = new QAction(mapIcon, QString::fromUtf8("\xF0\x9F\x97\xBA Generator Settings"), this);
+        m_impl->mapSettingsAction->setToolTip("Show/hide map generation settings");
+
+        QIcon algoIcon = this->style()->standardIcon(QStyle::SP_ComputerIcon);
+        m_impl->algorithmSettingsAction = new QAction(algoIcon, "Solver Settings", this);
+        m_impl->algorithmSettingsAction->setToolTip("Show/hide pathfinding algorithm settings");
+
+        QIcon themeIcon = this->style()->standardIcon(QStyle::SP_DesktopIcon);
+        m_impl->darkModeAction = new QAction(themeIcon, "Dark Mode", this);
+        m_impl->darkModeAction->setCheckable(true);
+        m_impl->darkModeAction->setToolTip("Toggle between light and dark themes.");
+
+        QIcon aboutIcon = this->style()->standardIcon(QStyle::SP_DialogHelpButton);
+        m_impl->aboutAction = new QAction(aboutIcon, "&About", this);
+        m_impl->aboutAction->setToolTip("Show information about this application.");
+
+        QIcon usageIcon = this->style()->standardIcon(QStyle::SP_DialogApplyButton);
+        m_impl->usageAction = new QAction(usageIcon, "&Usage Guide", this);
+        m_impl->usageAction->setToolTip("Show basic usage instructions.");
+    }
+
+    void MainWindow::createToolBars() {
+        QToolBar* settingsToolBar = addToolBar("Controls");
+        settingsToolBar->setObjectName("ControlsToolBar");
+        settingsToolBar->setMovable(false);
+        if (m_impl->mapSettingsAction) settingsToolBar->addAction(m_impl->mapSettingsAction);
+        if (m_impl->algorithmSettingsAction) settingsToolBar->addAction(m_impl->algorithmSettingsAction);
+        settingsToolBar->addSeparator();
+        if (m_impl->darkModeAction) settingsToolBar->addAction(m_impl->darkModeAction);
+    }
+
+    void MainWindow::createMenus() {
+        QMenuBar* menu = menuBar();
+        QMenu* viewMenu = menu->addMenu("&View");
+        if (m_impl->darkModeAction) viewMenu->addAction(m_impl->darkModeAction);
+        if (m_impl->settingsDockWidget) {
+            viewMenu->addSeparator();
+            viewMenu->addAction(m_impl->settingsDockWidget->toggleViewAction());
+        }
+        QMenu* helpMenu = menu->addMenu("&Help");
+        if (m_impl->usageAction) helpMenu->addAction(m_impl->usageAction);
+        if (m_impl->aboutAction) helpMenu->addAction(m_impl->aboutAction);
+    }
+
+    void MainWindow::createSettingsDockWidget() {
+        m_impl->settingsDockWidget = new QDockWidget("Settings", this);
+        m_impl->settingsDockWidget->setObjectName("SettingsDockWidget");
+        m_impl->settingsDockWidget->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+
+        QWidget* dockContentWidget = new QWidget();
+        dockContentWidget->setObjectName("SettingsDockContent");
+        auto* dockContentLayout = new QVBoxLayout(dockContentWidget);
+        dockContentLayout->setContentsMargins(0, 0, 0, 0);
+
+        auto* switcherLayout = new QHBoxLayout();
+        QPushButton* generatorButton = new QPushButton(QString::fromUtf8("\xF0\x9F\x97\xBA Generator"));
+        generatorButton->setObjectName("GeneratorSettingsButton");
+        QPushButton* solverButton = new QPushButton("Solver");
+        solverButton->setObjectName("SolverSettingsButton");
+        generatorButton->setCheckable(true);
+        solverButton->setCheckable(true);
+        generatorButton->setChecked(true);
+        generatorButton->setAutoExclusive(true);
+        solverButton->setAutoExclusive(true);
+
+        switcherLayout->addWidget(generatorButton);
+        switcherLayout->addWidget(solverButton);
+        switcherLayout->setSpacing(0);
+
+        m_impl->settingsStack = new QStackedWidget();
+        m_impl->settingsStack->addWidget(createMapSettingsPanel());      // Index 0: Generator
+        m_impl->settingsStack->addWidget(createAlgorithmSettingsPanel()); // Index 1: Solver
+
+        connect(generatorButton, &QPushButton::clicked, this, [this]() { if (m_impl && m_impl->settingsStack) m_impl->settingsStack->setCurrentIndex(0); });
+        connect(solverButton, &QPushButton::clicked, this, [this]() { if (m_impl && m_impl->settingsStack) m_impl->settingsStack->setCurrentIndex(1); });
+
+        dockContentLayout->addLayout(switcherLayout);
+        dockContentLayout->addWidget(m_impl->settingsStack);
+
+        m_impl->settingsDockWidget->setWidget(dockContentWidget);
+        addDockWidget(Qt::RightDockWidgetArea, m_impl->settingsDockWidget);
+    }
+
+    // Holds GENERATOR settings now
+    QWidget* MainWindow::createMapSettingsPanel() {
+        QWidget* panel = new QWidget();
+        auto* panelLayout = new QVBoxLayout(panel);
+        panelLayout->setContentsMargins(15, 15, 15, 15);
+
+        QGroupBox* genGroup = new QGroupBox("Generator Parameters");
+        auto* formLayout = new QFormLayout(genGroup);
+
+        m_impl->gridSizeSpinBox = new QSpinBox();
+        m_impl->gridSizeSpinBox->setRange(100, 20000); m_impl->gridSizeSpinBox->setSingleStep(100);
+        m_impl->gridSizeSpinBox->setToolTip("Width and Height of the square grid.");
+        formLayout->addRow("Grid Size:", m_impl->gridSizeSpinBox);
+
+        m_impl->numPolygonsSpinBox = new QSpinBox();
+        m_impl->numPolygonsSpinBox->setRange(1, 1000); m_impl->numPolygonsSpinBox->setSingleStep(10);
+        m_impl->numPolygonsSpinBox->setToolTip("Number of random polygons (obstacles/regions) to generate.");
+        formLayout->addRow("Num Polygons:", m_impl->numPolygonsSpinBox);
+
+        m_impl->numThreadsSpinBox = new QSpinBox();
+        unsigned int maxThreads = std::thread::hardware_concurrency();
+        m_impl->numThreadsSpinBox->setRange(1, std::max(1u, maxThreads));
+        m_impl->numThreadsSpinBox->setToolTip("Number of processor threads for generation.");
+        formLayout->addRow("Num Threads:", m_impl->numThreadsSpinBox);
+
+        m_impl->backgroundValueSpinBox = new QDoubleSpinBox();
+        m_impl->backgroundValueSpinBox->setRange(0.1, 100.0); m_impl->backgroundValueSpinBox->setDecimals(1); m_impl->backgroundValueSpinBox->setSingleStep(0.1);
+        m_impl->backgroundValueSpinBox->setToolTip("Base traversal cost for empty cells.");
+        formLayout->addRow("Background Value:", m_impl->backgroundValueSpinBox);
+
+        m_impl->obstacleValueSpinBox = new QDoubleSpinBox();
+        m_impl->obstacleValueSpinBox->setRange(-100.0, 0.0); m_impl->obstacleValueSpinBox->setDecimals(1); m_impl->obstacleValueSpinBox->setSingleStep(0.1);
+        m_impl->obstacleValueSpinBox->setToolTip("Value for polygon boundaries (use A*'s obstacle value, e.g., -1.0).");
+        formLayout->addRow("Obstacle Value:", m_impl->obstacleValueSpinBox);
+
+        QGroupBox* weightGroup = new QGroupBox("Polygon Interior Weights");
+        auto* weightLayout = new QFormLayout(weightGroup);
+        m_impl->minWeightSpinBox = new QDoubleSpinBox();
+        m_impl->minWeightSpinBox->setRange(0.1, 100.0); m_impl->minWeightSpinBox->setDecimals(1); m_impl->minWeightSpinBox->setSingleStep(0.1);
+        m_impl->minWeightSpinBox->setToolTip("Minimum random weight multiplier for polygon interiors.");
+        weightLayout->addRow("Min Weight:", m_impl->minWeightSpinBox);
+
+        m_impl->maxWeightSpinBox = new QDoubleSpinBox();
+        m_impl->maxWeightSpinBox->setRange(0.2, 100.0); m_impl->maxWeightSpinBox->setDecimals(1); m_impl->maxWeightSpinBox->setSingleStep(0.1);
+        m_impl->maxWeightSpinBox->setToolTip("Maximum random weight multiplier for polygon interiors.");
+        weightLayout->addRow("Max Weight:", m_impl->maxWeightSpinBox);
+
+        connect(m_impl->minWeightSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), m_impl->maxWeightSpinBox, &QDoubleSpinBox::setMinimum);
+        connect(m_impl->maxWeightSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), m_impl->minWeightSpinBox, &QDoubleSpinBox::setMaximum);
+
+        panelLayout->addWidget(genGroup);
+        panelLayout->addWidget(weightGroup);
+        panelLayout->addStretch();
+
+        return panel;
+    }
+
+    // Holds SOLVER (A*) settings
+    QWidget* MainWindow::createAlgorithmSettingsPanel() {
+        QWidget* panel = new QWidget();
+        auto* panelLayout = new QVBoxLayout(panel);
+        panelLayout->setContentsMargins(15, 15, 15, 15);
+        QGroupBox* algoGroup = new QGroupBox("Pathfinding Algorithm");
+        auto* formLayout = new QFormLayout(algoGroup);
+        m_impl->algorithmComboBox = new QComboBox();
+        m_impl->algorithmComboBox->addItem("Optimized A*");
+        m_impl->algorithmComboBox->addItem("Dijkstra");
+        m_impl->algorithmComboBox->addItem("BFS");
+        m_impl->algorithmComboBox->addItem("Theta*");
+        m_impl->algorithmComboBox->addItem("Theta* lazy");
+        m_impl->algorithmComboBox->addItem("Delta Stepping - GPU");
+        m_impl->algorithmComboBox->addItem("HADS - GPU");
+        m_impl->algorithmComboBox->addItem("A* - GPU");
+        m_impl->algorithmComboBox->setToolTip("Select the algorithm to find the path.");
+        formLayout->addRow("Algorithm:", m_impl->algorithmComboBox);
+        panelLayout->addWidget(algoGroup);
+        panelLayout->addStretch();
+        return panel;
+    }
+
+    // =========================================================================
+    // Public Slots
+    // =========================================================================
+    void MainWindow::onImportClicked() {
+        QString filePath = openFileDialog(false);
+        if (!filePath.isEmpty() && m_impl) {
+            // TODO: Implement XML parsing
+            m_impl->statusBar->showMessage("XML Import not implemented yet.", 5000);
+        }
+    }
+
+    // --- RESTORED: Slot Implementation for "Run Test" button ---
+    // --- Slot for "Run Test" button - Restored Full Logic ---
+    void MainWindow::onGenerateMapClicked()
+    {  /*
+        if (!m_impl) return;
+
+        // 1. Read Parameters from UI
+        Processor::GeneratorParams genParams;
+        // ... (Read genParams from UI spinboxes) ...
+        genParams.grid_size = static_cast<std::size_t>(m_impl->gridSizeSpinBox->value());
+        genParams.num_polygons = static_cast<std::size_t>(m_impl->numPolygonsSpinBox->value());
+        genParams.num_threads = static_cast<unsigned int>(m_impl->numThreadsSpinBox->value());
+        genParams.background_value = static_cast<float>(m_impl->backgroundValueSpinBox->value());
+        genParams.obstacle_value = static_cast<float>(m_impl->obstacleValueSpinBox->value());
+        genParams.min_weight = static_cast<float>(m_impl->minWeightSpinBox->value());
+        genParams.max_weight = static_cast<float>(m_impl->maxWeightSpinBox->value());
+
+
+        Processor::SolverParams solverParams;
+        solverParams.algorithm_name = m_impl->algorithmComboBox->currentText().toStdString();
+        // Leave start_point and end_point as {-1,-1} to let processor auto-detect
+        solverParams.start_point = { -1, -1 };
+        solverParams.end_point = { -1, -1 };
+
+        // Validation
+        // ... (Parameter validation checks) ...
+        if (genParams.min_weight >= genParams.max_weight || genParams.min_weight <= 0 || genParams.max_weight <= 0) { QMessageBox::warning(this, "Settings Error", "..."); return; }
+        if (MapGenerator::approx_equal(genParams.background_value, genParams.obstacle_value) || genParams.background_value < 0.0f) { QMessageBox::warning(this, "Settings Error", "..."); return; }
+
+
+        // 2. Update Status & Run Test via Processor
+        m_impl->statusBar->showMessage(QString("Running Test (Generate + Solve)..."), 0);
+        m_impl->testerButton->setEnabled(false);
+        m_impl->calculateButton->setEnabled(false);
+        m_impl->importButton->setEnabled(false);
+        QCoreApplication::processEvents();
+
+        Processor::TestResult testResult;
+        std::vector<float> generatedMap; // Processor will fill this
+        std::size_t mapW = 0, mapH = 0;
+
+        // --- Call the processor function ---
+        try {
+            testResult = Processor::run_generation_and_pathfinding_test(
+                genParams, solverParams, generatedMap, mapW, mapH
+            );
+        }
+        catch (const std::exception& e) {
+            testResult.error_message = std::string("Processor function error: ") + e.what();
+        }
+        catch (...) {
+            testResult.error_message = "An unknown error occurred during processing.";
+        }
+        // --- End processing call ---
+
+        // 3. Process & Display Results
+        m_impl->testerButton->setEnabled(true);
+        m_impl->importButton->setEnabled(true);
+
+        if (!testResult.error_message.empty()) {
+            // Error occurred
+            QMessageBox::critical(this, "Test Error", QString::fromStdString(testResult.error_message));
+            m_impl->statusBar->showMessage("Test failed.", 5000);
+            m_impl->calculateButton->setEnabled(false);
+            m_impl->exportButton->setEnabled(false);
+            m_impl->currentMapWeights.clear(); // Clear any potentially partial map
+            m_impl->currentMapWidth = 0;
+            m_impl->currentMapHeight = 0;
+        }
+        else {
+            // Success (map generated, pathfinding attempted)
+            m_impl->currentMapWeights = std::move(generatedMap); // Store generated map
+            m_impl->currentMapWidth = mapW;
+            m_impl->currentMapHeight = mapH;
+            m_impl->currentFilePath.clear();
+
+            QString resultMsg;
+            QMessageBox::Icon icon = QMessageBox::Information;
+
+            resultMsg = QString("Generation: %1 ms.\n").arg(testResult.generation_time_ms, 0, 'f', 1);
+            if (testResult.path_found) {
+                resultMsg += QString("Pathfinding (%1,%2 to %3,%4): %5 ms. Length: %6 nodes.") // Display length
+                    .arg(testResult.actual_start.x).arg(testResult.actual_start.y)
+                    .arg(testResult.actual_end.x).arg(testResult.actual_end.y)
+                    .arg(testResult.pathfinding_time_ms, 0, 'f', 1)
+                    .arg(testResult.path_length); // Show path length
+                m_impl->exportButton->setEnabled(true);
+            }
+            else {
+                resultMsg += QString("Pathfinding: No path found (Time: %1 ms).").arg(testResult.pathfinding_time_ms, 0, 'f', 1);
+                icon = QMessageBox::Warning;
+                m_impl->exportButton->setEnabled(false);
+            }
+
+            m_impl->statusBar->showMessage("Test finished.", 5000);
+            // Show results in a message box
+            QMessageBox msgBox(icon, "Test Complete", resultMsg, QMessageBox::Ok, this);
+            msgBox.exec();
+
+            m_impl->calculateButton->setEnabled(true); // Enable separate calculation on this map
+
+            // TODO: Update map visualization if implemented
+            // Example: if(mapDisplayWidget) mapDisplayWidget->setMapData(m_impl->currentMapWeights, mapW, mapH);
+        }*/
+    } // End of onGenerateMapClicked
+
+
+    // Calculates path on CURRENT map (from import or last generation)
+    void MainWindow::onCalculateClicked() {
+        if (!m_impl || m_impl->currentMapWeights.empty()) {
+            QMessageBox::warning(this, "Calculation Warning", "No map data available. Please import or generate a map first ('Run Test').");
+            return;
+        }
+    }
+
+
+    void MainWindow::onExportClicked() {
+        QString filePath = openFileDialog(true);
+        if (!filePath.isEmpty() && m_impl) {
+            // TODO: Implement XML export
+            m_impl->statusBar->showMessage("XML Export not implemented yet.", 5000);
+        }
+    }
+
+    void MainWindow::onMapSettingsClicked() { // Shows Generator Panel
+        if (m_impl && m_impl->settingsDockWidget) {
+            m_impl->settingsDockWidget->show();
+            m_impl->settingsDockWidget->raise();
+            if (m_impl->settingsStack) m_impl->settingsStack->setCurrentIndex(0);
+            QPushButton* genButton = m_impl->settingsDockWidget->findChild<QPushButton*>("GeneratorSettingsButton");
+            if (genButton) genButton->setChecked(true);
+            if (m_impl->gridSizeSpinBox) m_impl->gridSizeSpinBox->setFocus();
+        }
+    }
+
+    void MainWindow::onAlgorithmSettingsClicked() { // Shows Solver Panel
+        if (m_impl && m_impl->settingsDockWidget) {
+            m_impl->settingsDockWidget->show();
+            m_impl->settingsDockWidget->raise();
+            if (m_impl->settingsStack) m_impl->settingsStack->setCurrentIndex(1);
+            QPushButton* solverButton = m_impl->settingsDockWidget->findChild<QPushButton*>("SolverSettingsButton");
+            if (solverButton) solverButton->setChecked(true);
+            if (m_impl->algorithmComboBox) m_impl->algorithmComboBox->setFocus();
+        }
+    }
+
+    void MainWindow::onToggleDarkMode(bool checked) { applyStylesheet(checked); }
+
+    void MainWindow::onAbout() {
+        QMessageBox::about(this, "About Pathfinding Processor",
+            "<h2>Pathfinding Map Generator & Solver v1.0</h2>"
+            "<p>Copyright © 2024 Your Company Name</p>"
+            "<p>Generates random maps and finds paths using A*.</p>"
+            "<p>Built with Qt.</p>");
+    }
+
+    void MainWindow::onShowUsage() {
+        QMessageBox::information(this, "Usage Guide",
+            "1.  <b>Configure Generator:</b> Use 'Generator Settings' (🗺️) to set map size, polygons, etc.\n"
+            "2.  <b>Run Test:</b> Generate map & find path using current settings.\n"
+            "3.  (Alternatively) <b>Import XML:</b> Load an existing map.\n"
+            "4.  <b>Configure Solver:</b> Use 'Solver Settings' (⚙️) to choose the pathfinding algorithm.\n"
+            "5.  <b>Calculate Path:</b> Find path on the current map.\n"
+            "6.  <b>Export Results:</b> Save the calculated path (if found).\n\n"
+            "Use the View menu or toolbar to toggle Dark Mode and settings panel visibility.");
+    }
+
+    // =========================================================================
+    // Private Helper Methods - Settings & Style
+    // =========================================================================
+    void MainWindow::loadSettings() {
+        if (!m_impl || !m_impl->settings) return;
+        restoreGeometry(m_impl->settings->value("geometry").toByteArray());
+        restoreState(m_impl->settings->value("windowState").toByteArray());
+
+        // Theme
+        bool darkMode = m_impl->settings->value("darkModeEnabled", false).toBool();
+        if (m_impl->darkModeAction) { m_impl->darkModeAction->blockSignals(true); m_impl->darkModeAction->setChecked(darkMode); m_impl->darkModeAction->blockSignals(false); }
+        applyStylesheet(darkMode);
+
+        // Generator Settings
+        if (m_impl->gridSizeSpinBox) m_impl->gridSizeSpinBox->setValue(m_impl->settings->value("gen/gridSize", 1000).toInt());
+        if (m_impl->numPolygonsSpinBox) m_impl->numPolygonsSpinBox->setValue(m_impl->settings->value("gen/numPolygons", 50).toInt());
+        if (m_impl->numThreadsSpinBox) m_impl->numThreadsSpinBox->setValue(m_impl->settings->value("gen/numThreads", std::max(1u, std::thread::hardware_concurrency())).toUInt());
+        if (m_impl->backgroundValueSpinBox) m_impl->backgroundValueSpinBox->setValue(m_impl->settings->value("gen/backgroundValue", 1.0).toDouble());
+        if (m_impl->obstacleValueSpinBox) m_impl->obstacleValueSpinBox->setValue(m_impl->settings->value("gen/obstacleValue", -1.0).toDouble());
+        if (m_impl->minWeightSpinBox) m_impl->minWeightSpinBox->setValue(m_impl->settings->value("gen/minWeight", 1.1).toDouble());
+        if (m_impl->maxWeightSpinBox) m_impl->maxWeightSpinBox->setValue(m_impl->settings->value("gen/maxWeight", 5.0).toDouble());
+        if (m_impl->minWeightSpinBox && m_impl->maxWeightSpinBox) { m_impl->maxWeightSpinBox->setMinimum(m_impl->minWeightSpinBox->value()); m_impl->minWeightSpinBox->setMaximum(m_impl->maxWeightSpinBox->value()); }
+
+        // Solver Settings
+        QString defaultAlgoName = QString::fromStdString(m_impl->selectedAlgorithm);
+        m_impl->selectedAlgorithm = m_impl->settings->value("solver/algorithm", defaultAlgoName).toString().toStdString();
+        if (m_impl->algorithmComboBox) { int index = m_impl->algorithmComboBox->findText(QString::fromStdString(m_impl->selectedAlgorithm)); m_impl->algorithmComboBox->setCurrentIndex((index != -1) ? index : 0); }
+
+        // Dock visibility
+        if (m_impl->settingsDockWidget && !m_impl->settings->value("settingsDockVisible", true).toBool()) { m_impl->settingsDockWidget->hide(); }
+    }
+
+    void MainWindow::saveSettings() {
+        if (!m_impl || !m_impl->settings) return;
+        m_impl->settings->setValue("geometry", saveGeometry());
+        m_impl->settings->setValue("windowState", saveState());
+        m_impl->settings->setValue("darkModeEnabled", m_impl->darkModeAction ? m_impl->darkModeAction->isChecked() : false);
+        if (m_impl->settingsDockWidget) { m_impl->settings->setValue("settingsDockVisible", m_impl->settingsDockWidget->isVisible()); }
+
+        // Generator Settings
+        m_impl->settings->setValue("gen/gridSize", m_impl->gridSizeSpinBox ? m_impl->gridSizeSpinBox->value() : 1000);
+        m_impl->settings->setValue("gen/numPolygons", m_impl->numPolygonsSpinBox ? m_impl->numPolygonsSpinBox->value() : 50);
+        m_impl->settings->setValue("gen/numThreads", m_impl->numThreadsSpinBox ? m_impl->numThreadsSpinBox->value() : std::max(1u, std::thread::hardware_concurrency()));
+        m_impl->settings->setValue("gen/backgroundValue", m_impl->backgroundValueSpinBox ? m_impl->backgroundValueSpinBox->value() : 1.0);
+        m_impl->settings->setValue("gen/obstacleValue", m_impl->obstacleValueSpinBox ? m_impl->obstacleValueSpinBox->value() : -1.0);
+        m_impl->settings->setValue("gen/minWeight", m_impl->minWeightSpinBox ? m_impl->minWeightSpinBox->value() : 1.1);
+        m_impl->settings->setValue("gen/maxWeight", m_impl->maxWeightSpinBox ? m_impl->maxWeightSpinBox->value() : 5.0);
+
+        // Solver Settings
+        if (m_impl->algorithmComboBox) m_impl->selectedAlgorithm = m_impl->algorithmComboBox->currentText().toStdString();
+        m_impl->settings->setValue("solver/algorithm", QString::fromStdString(m_impl->selectedAlgorithm));
+
+        m_impl->settings->sync();
+    }
+
+    void MainWindow::applyStylesheet(bool dark) {
+        qApp->setStyleSheet(dark ? darkStylesheet : lightStylesheet);
+    }
+
+    // =========================================================================
+    // Private Helper Methods - File Dialog
+    // =========================================================================
+    QString MainWindow::openFileDialog(bool forSaving) {
+        QString filePath;
+        QString title = forSaving ? "Save Results XML" : "Open Map XML";
+        QString filter = "XML Files (*.xml);;All Files (*)";
+        QString lastDir = m_impl && m_impl->settings ? m_impl->settings->value("lastOpenDir", QDir::homePath()).toString() : QDir::homePath();
+        QString currentDir = (m_impl && !m_impl->currentFilePath.isEmpty()) ? QFileInfo(m_impl->currentFilePath).absolutePath() : lastDir;
+
+        if (forSaving) {
+            filePath = QFileDialog::getSaveFileName(this, title, currentDir, filter);
+        }
+        else {
+            filePath = QFileDialog::getOpenFileName(this, title, currentDir, filter);
+        }
+
+        if (!filePath.isEmpty() && m_impl && m_impl->settings) {
+            m_impl->settings->setValue("lastOpenDir", QFileInfo(filePath).absolutePath());
+        }
+        return filePath;
+    }
+
+} // namespace app
