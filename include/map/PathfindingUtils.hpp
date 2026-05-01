@@ -39,6 +39,8 @@ namespace PathfindingUtils {
         1.41421356f, 1.41421356f, 1.41421356f, 1.41421356f
     };
     inline constexpr float EPSILON = 1e-6f; // Small value for float checks
+    // Maximum Tobler time penalty: caps extreme slopes so they are costly but not impassable
+    inline constexpr float MAX_TOBLER_PENALTY = 1000.0f;
     // Heuristic type constants
     inline constexpr int HEURISTIC_EUCLIDEAN = 0;
     inline constexpr int HEURISTIC_DIAGONAL = 1;
@@ -99,6 +101,32 @@ namespace PathfindingUtils {
              y = index / width;
              x = index % width;
         }
+    }
+
+    /**
+     * @brief Shared Tobler edge-cost calculation used by all CPU pathfinding algorithms.
+     *
+     * Returns the movement cost from a cell to a neighbor in the given direction using
+     * the Tobler hiking function. Extreme slopes are capped at MAX_TOBLER_PENALTY rather
+     * than treated as impassable, unless SlopeFactor underflows to zero.
+     *
+     * @param dir       Direction index (0–7 matching dx/dy/costs arrays).
+     * @param resolution Real-world size of one logical grid cell edge (metres).
+     * @param delta_h   Elevation change: neighbor_elevation − current_elevation.
+     * @param terrain_value Passability cost of the neighbour cell (> 0 = passable).
+     * @return Movement cost, or std::numeric_limits<float>::max() if impassable.
+     */
+    inline float toblerEdgeCost(int dir, float resolution, float delta_h, float terrain_value) {
+        float base_geometric_cost = costs[dir];
+        float delta_dist_world = base_geometric_cost * resolution;
+        if (delta_dist_world <= EPSILON) return std::numeric_limits<float>::max();
+        float S = delta_h / delta_dist_world;
+        float SlopeFactor = std::exp(-3.5f * std::fabs(S + 0.05f));
+        float time_penalty = (SlopeFactor > EPSILON)
+            ? std::min(1.0f / SlopeFactor, MAX_TOBLER_PENALTY)
+            : std::numeric_limits<float>::max();
+        if (time_penalty >= std::numeric_limits<float>::max()) return std::numeric_limits<float>::max();
+        return base_geometric_cost * terrain_value * time_penalty;
     }
 
 } // namespace PathfindingUtils

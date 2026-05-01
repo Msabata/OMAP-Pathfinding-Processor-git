@@ -1,6 +1,6 @@
 // File: DeltaSteppingKernels.cu
 
-#include "cuda/include/PathfindingUtilsGPU.cuh" // Include the GPU header (uses extern __device__)
+#include "cuda/include/PathfindingUtilsGPU.cuh" // shared structs, helpers, and D_DX_DEV/D_DY_DEV externs
 
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
@@ -8,140 +8,19 @@
 #include <limits.h> // For INT_MAX used as sentinel
 #include <math.h>   // Includes device math functions like fmaxf, fminf, floorf, expf, fabsf
 #include <stdint.h> // For uint8_t
-// #include <stdio.h> // No longer needed
 
 //===========================================================
 // Define Global __device__ Arrays Declared in PathfindingUtilsGPU.cuh
+// (Definitions live here once; all other .cu files use extern declarations.)
 //===========================================================
-__device__ int D_DX_DEV[8] = { 1, 0, -1, 0, 1, -1, -1, 1 };
-__device__ int D_DY_DEV[8] = { 0, 1, 0, -1, 1, 1, -1, -1 };
-
-//===========================================================
-// Utility Device Functions
-//===========================================================
-
-#define EPSILON_GPU 1e-6f
-#define FLAG_IMPASSABLE_GPU (1 << 2)
-
-// --- atomicMin for float using atomicCAS ---
-__device__ inline float atomicMinFloat(float* addr, float value) {
-    float old;
-    old = *addr;
-    while (old > value) {
-        int* addr_as_int = (int*)addr;
-        int old_int = *addr_as_int;
-        if (old <= value) break;
-        int assumed = atomicCAS(addr_as_int, old_int, __float_as_int(value));
-        if (assumed == old_int) {
-            break;
-        }
-        else {
-            old = *addr;
-        }
-    }
-    return old;
+namespace PathfindingUtilsGPU {
+    __device__ int D_DX_DEV[8] = { 1, 0, -1, 0, 1, -1, -1, 1 };
+    __device__ int D_DY_DEV[8] = { 0, 1, 0, -1, 1, 1, -1, -1 };
 }
 
-//===========================================================
-// Device Data Structures
-//===========================================================
-
-typedef struct {
-    int width; int height; float resolution;
-    float* values; uint8_t* flags;
-} LogicalGridInfoGPU;
-
-typedef struct {
-    int width; int height; float resolution; float inv_resolution;
-    float origin_offset_x; float origin_offset_y;
-    float* values;
-} ElevationGridInfoGPU;
-
-//===========================================================
-// Device Helper: Elevation Sampling (Unchanged)
-//===========================================================
-__device__ float getElevationAtDevice(
-    float world_x, float world_y,
-    const ElevationGridInfoGPU* elevInfo)
-{
-    // ... implementation from previous versions ...
-    float rel_x = world_x - elevInfo->origin_offset_x;
-    float rel_y = world_y - elevInfo->origin_offset_y;
-    float grid_x_f = rel_x * elevInfo->inv_resolution;
-    float grid_y_f = rel_y * elevInfo->inv_resolution;
-    int x0 = floorf(grid_x_f);
-    int y0 = floorf(grid_y_f);
-    float tx = grid_x_f - (float)x0;
-    float ty = grid_y_f - (float)y0;
-    int ix0 = max(0, min(x0, elevInfo->width - 1));
-    int iy0 = max(0, min(y0, elevInfo->height - 1));
-    int ix1 = max(0, min(x0 + 1, elevInfo->width - 1));
-    int iy1 = max(0, min(y0 + 1, elevInfo->height - 1));
-    unsigned long long idx00 = (unsigned long long)iy0 * elevInfo->width + ix0;
-    unsigned long long idx10 = (unsigned long long)iy0 * elevInfo->width + ix1;
-    unsigned long long idx01 = (unsigned long long)iy1 * elevInfo->width + ix0;
-    unsigned long long idx11 = (unsigned long long)iy1 * elevInfo->width + ix1;
-    unsigned long long total_elev_cells = (unsigned long long)elevInfo->width * elevInfo->height;
-    if (idx00 >= total_elev_cells || idx10 >= total_elev_cells || idx01 >= total_elev_cells || idx11 >= total_elev_cells) {
-        unsigned long long clamped_idx = (unsigned long long)iy0 * elevInfo->width + ix0;
-        return (clamped_idx < total_elev_cells) ? elevInfo->values[clamped_idx] : 0.0f;
-    }
-    float Q00 = elevInfo->values[idx00];
-    float Q10 = elevInfo->values[idx10];
-    float Q01 = elevInfo->values[idx01];
-    float Q11 = elevInfo->values[idx11];
-    tx = fmaxf(0.0f, fminf(tx, 1.0f));
-    ty = fmaxf(0.0f, fminf(ty, 1.0f));
-    float top_interp = Q00 * (1.0f - tx) + Q10 * tx;
-    float bottom_interp = Q01 * (1.0f - tx) + Q11 * tx;
-    return top_interp * (1.0f - ty) + bottom_interp * ty;
-}
-
-//===========================================================
-// Device Helper: Edge Cost Calculation (**Simplified Debug Version Active**)
-//===========================================================
-__device__ float calculateToblerEdgeCost(
-    int x, int y, int nx, int ny,
-    const LogicalGridInfoGPU* logInfo,
-    const ElevationGridInfoGPU* elevInfo,
-    float current_elevation) // current_elevation is unused in simplified version
-{
-    /*
-    // --- TEMPORARY DEBUGGING COST FUNCTION ---
-    int log_width = logInfo->width;
-    if (nx < 0 || nx >= log_width || ny < 0 || ny >= logInfo->height) return FLT_MAX;
-    int neighborIdx = PathfindingUtilsGPU::toIndexGPU(nx, ny, log_width);
-    float neighbor_base_cost = logInfo->values[neighborIdx];
-    uint8_t neighbor_flags = logInfo->flags[neighborIdx];
-    if (neighbor_base_cost <= 0.0f || (neighbor_flags & FLAG_IMPASSABLE_GPU)) return FLT_MAX;
-    float base_geometric_cost = 1.0f;
-    if (x != nx && y != ny) base_geometric_cost = 1.41421356f;
-    float simple_cost = base_geometric_cost * fmaxf(0.01f, neighbor_base_cost);
-    return simple_cost;*/
-
-    // --- ORIGINAL FULL TOBLER CODE (Commented Out) ---
-    int log_width = logInfo->width;
-    if (nx < 0 || nx >= log_width || ny < 0 || ny >= logInfo->height) return FLT_MAX;
-    int neighborIdx = PathfindingUtilsGPU::toIndexGPU(nx, ny, log_width);
-    float neighbor_base_cost = logInfo->values[neighborIdx];
-    uint8_t neighbor_flags = logInfo->flags[neighborIdx];
-    if (neighbor_base_cost <= 0.0f || (neighbor_flags & FLAG_IMPASSABLE_GPU)) return FLT_MAX;
-    float base_geometric_cost = 1.0f;
-    if (x != nx && y != ny) base_geometric_cost = 1.41421356f;
-    float delta_dist_world = base_geometric_cost * logInfo->resolution;
-    if (delta_dist_world <= EPSILON_GPU) return FLT_MAX; // Avoid division by zero
-    float world_x_neigh = ((float)nx + 0.5f) * logInfo->resolution;
-    float world_y_neigh = ((float)ny + 0.5f) * logInfo->resolution;
-    float neighbor_elevation = getElevationAtDevice(world_x_neigh, world_y_neigh, elevInfo);
-    float delta_h = neighbor_elevation - current_elevation;
-    float S = delta_h / delta_dist_world;
-    float SlopeFactor = expf(-3.5f * fabsf(S + 0.05f));
-    float time_penalty = (SlopeFactor > EPSILON_GPU) ? (1.0f / SlopeFactor) : FLT_MAX;
-    if (time_penalty >= FLT_MAX) return FLT_MAX;
-    float final_move_cost = base_geometric_cost * neighbor_base_cost * time_penalty;
-    return fmaxf(0.0f, final_move_cost);
-
-}
+// Bring shared device helpers into scope for unqualified use in kernels
+using PathfindingUtilsGPU::toIndexGPU;
+using PathfindingUtilsGPU::toCoordsGPU;
 
 //===========================================================
 // Kernel: relax light edges
@@ -186,8 +65,11 @@ extern "C" __global__ void relaxLightEdgesKernel(
 
                 if (old_dist > tentativeDistance) {
                     int bucket_index = static_cast<int>(floorf(tentativeDistance / delta_arg));
-                    d_nextBucket[neighborIdx] = bucket_index;
-                    d_parents[neighborIdx] = i;
+                    // Use atomicExch to avoid data races: multiple threads may update the same neighbor.
+                    // d_distance is the authoritative sync point; these writes may race but converge
+                    // correctly over subsequent relaxation passes.
+                    atomicExch(&d_nextBucket[neighborIdx], bucket_index);
+                    atomicExch(&d_parents[neighborIdx], i);
                     atomicExch(d_changed, 1);
                 }
             }
@@ -238,8 +120,9 @@ extern "C" __global__ void relaxHeavyEdgesKernel(
 
                 if (old_dist > tentativeDistance) {
                     int bucket_index = static_cast<int>(floorf(tentativeDistance / delta_arg));
-                    d_nextBucket[neighborIdx] = bucket_index;
-                    d_parents[neighborIdx] = i;
+                    // Use atomicExch to avoid data races on the heavy-edge path as well.
+                    atomicExch(&d_nextBucket[neighborIdx], bucket_index);
+                    atomicExch(&d_parents[neighborIdx], i);
                     atomicExch(d_changed, 1);
                 }
             }

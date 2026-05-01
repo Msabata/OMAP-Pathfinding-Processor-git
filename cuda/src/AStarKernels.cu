@@ -1,108 +1,28 @@
 // File: kernels/AStarKernels.cu
 
+#include "cuda/include/PathfindingUtilsGPU.cuh" // shared structs, atomicMinFloat, getElevationAtDevice,
+                                                 // calculateToblerEdgeCost, D_DX_DEV/D_DY_DEV externs
+
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
-// Include or define common utilities (inline device functions are okay)
-// #include "PathfindingUtilsGPU.cuh"
+
+// Bring shared device helpers into scope for unqualified use in kernels
+using PathfindingUtilsGPU::toIndexGPU;
+using PathfindingUtilsGPU::toCoordsGPU;
 
 
 //===========================================================
-// Utility Device Functions (Defined as inline or included)
+// A* Specific Device Functions
 //===========================================================
-#define EPSILON_GPU 1e-6f
-#define FLAG_IMPASSABLE_GPU (1 << 2)
-
-__device__ inline float atomicMinFloat(float* addr, float value) { /* ... definition ... */
-    float old;
-    old = *addr;
-    while (old > value) {
-        int* addr_as_int = (int*)addr;
-        int old_int = *addr_as_int;
-        if (old <= value) break;
-        int assumed = atomicCAS(addr_as_int, old_int, __float_as_int(value));
-        if (assumed == old_int) {
-            break;
-        }
-        else {
-            old = *addr;
-        }
-    }
-    return old;
-}
-__device__ inline int toIndexGPU(int x, int y, int width) { return y * width + x; }
-__device__ inline void toCoordsGPU(int index, int width, int* x, int* y) { if (width <= 0) { *x = -1; *y = -1; return; } *y = index / width; *x = index - (*y * width); }
-__device__ int D_DX_DEV[8] = { 1, 0, -1, 0, 1, -1, -1, 1 };
-__device__ int D_DY_DEV[8] = { 0, 1, 0, -1, 1, 1, -1, -1 };
-
-// --- Device Data Structures ---
-typedef struct {
-    int width; int height; float resolution;
-    float* values; uint8_t* flags;
-} LogicalGridInfoGPU; // *** FIX: Added semicolon ***
-
-typedef struct {
-    int width; int height; float resolution; float inv_resolution;
-    float origin_offset_x; float origin_offset_y;
-    float* values;
-} ElevationGridInfoGPU; // *** FIX: Added semicolon ***
-
-__device__ inline float getElevationAtDevice(float world_x, float world_y, const ElevationGridInfoGPU* elevInfo) { /* ... definition ... */
-    if (!elevInfo || !elevInfo->values || elevInfo->width <= 0 || elevInfo->height <= 0) return 0.0f;
-    float rel_x = world_x - elevInfo->origin_offset_x;
-    float rel_y = world_y - elevInfo->origin_offset_y;
-    if (fabsf(elevInfo->resolution) < EPSILON_GPU) return 0.0f;
-    float grid_x_f = rel_x * elevInfo->inv_resolution;
-    float grid_y_f = rel_y * elevInfo->inv_resolution;
-    int x0 = floorf(grid_x_f);
-    int y0 = floorf(grid_y_f);
-    int ix0 = max(0, min(x0, elevInfo->width - 1));
-    int iy0 = max(0, min(y0, elevInfo->height - 1));
-    int ix1 = max(0, min(x0 + 1, elevInfo->width - 1));
-    int iy1 = max(0, min(y0 + 1, elevInfo->height - 1));
-    unsigned long long idx00 = (unsigned long long)iy0 * elevInfo->width + ix0;
-    unsigned long long idx10 = (unsigned long long)iy0 * elevInfo->width + ix1;
-    unsigned long long idx01 = (unsigned long long)iy1 * elevInfo->width + ix0;
-    unsigned long long idx11 = (unsigned long long)iy1 * elevInfo->width + ix1;
-    float Q00 = elevInfo->values[idx00]; float Q10 = elevInfo->values[idx10];
-    float Q01 = elevInfo->values[idx01]; float Q11 = elevInfo->values[idx11];
-    float tx = fmaxf(0.0f, fminf(grid_x_f - (float)x0, 1.0f));
-    float ty = fmaxf(0.0f, fminf(grid_y_f - (float)y0, 1.0f));
-    float val_0 = Q00 * (1.0f - tx) + Q10 * tx;
-    float val_1 = Q01 * (1.0f - tx) + Q11 * tx;
-    return val_0 * (1.0f - ty) + val_1 * ty;
-}
-
-// --- Device Helper: Edge Cost Calculation (Tobler) ---
-__device__ inline float calculateToblerEdgeCost(int x, int y, int nx, int ny, const LogicalGridInfoGPU* logInfo, const ElevationGridInfoGPU* elevInfo, float current_elevation) { /* ... definition ... */
-    if (!logInfo || !logInfo->values || !logInfo->flags || !elevInfo) return FLT_MAX;
-    int log_width = logInfo->width; int log_height = logInfo->height;
-    if (nx < 0 || nx >= log_width || ny < 0 || ny >= log_height) return FLT_MAX;
-    if (logInfo->resolution <= EPSILON_GPU) return FLT_MAX;
-    int neighborIdx = toIndexGPU(nx, ny, log_width);
-    float neighbor_base_cost = logInfo->values[neighborIdx];
-    uint8_t neighbor_flags = logInfo->flags[neighborIdx];
-    if (neighbor_base_cost <= 0.0f || (neighbor_flags & FLAG_IMPASSABLE_GPU)) return FLT_MAX;
-    float base_geometric_cost = (x != nx && y != ny) ? 1.41421356f : 1.0f;
-    float delta_dist_world = base_geometric_cost * logInfo->resolution;
-    if (delta_dist_world <= EPSILON_GPU) return FLT_MAX;
-    float world_x_neigh = ((float)nx + 0.5f) * logInfo->resolution;
-    float world_y_neigh = ((float)ny + 0.5f) * logInfo->resolution;
-    float neighbor_elevation = getElevationAtDevice(world_x_neigh, world_y_neigh, elevInfo);
-    float delta_h = neighbor_elevation - current_elevation;
-    float S = delta_h / delta_dist_world;
-    float SlopeFactor = expf(-3.5f * fabsf(S + 0.05f));
-    if (SlopeFactor <= EPSILON_GPU) return FLT_MAX;
-    float time_penalty = 1.0f / SlopeFactor;
-    float final_move_cost = base_geometric_cost * neighbor_base_cost * time_penalty;
-    return fmaxf(0.0f, final_move_cost);
-}
-__device__ inline float calculate_heuristic_gpu(int x, int y, int goal_x, int goal_y, float W) { /* Euclidean definition */
-    float dx_h = static_cast<float>(x - goal_x); float dy_h = static_cast<float>(y - goal_y);
-    return W * sqrtf(dx_h * dx_h + dy_h * dy_h + 1e-9f);
+__device__ inline float calculate_heuristic_gpu(int x, int y, int goal_x, int goal_y, float W) {
+    float dx_h = static_cast<float>(x - goal_x);
+    float dy_h = static_cast<float>(y - goal_y);
+    // No epsilon jitter: pure Euclidean distance keeps the heuristic admissible.
+    return W * sqrtf(dx_h * dx_h + dy_h * dy_h);
 }
 
 

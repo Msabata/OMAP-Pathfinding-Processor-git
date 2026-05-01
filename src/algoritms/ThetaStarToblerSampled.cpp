@@ -295,7 +295,21 @@ namespace Pathfinding {
 
         // --- Constants ---
         const float infinite_penalty = std::numeric_limits<float>::max();
-        const float MIN_TERRAIN_COST_FACTOR = 0.5f; // As confirmed
+
+        // Compute the minimum terrain cost across all passable cells at runtime for an
+        // admissible heuristic. Fall back to 0.5f if no passable cells are found.
+        float MIN_TERRAIN_COST_FACTOR = std::numeric_limits<float>::max();
+        for (int cy = 0; cy < log_height; ++cy) {
+            for (int cx = 0; cx < log_width; ++cx) {
+                const GridCellData& cell = logical_grid.at(cx, cy);
+                if (!cell.hasFlag(GridFlags::FLAG_IMPASSABLE) && cell.value > 0.0f) {
+                    MIN_TERRAIN_COST_FACTOR = std::min(MIN_TERRAIN_COST_FACTOR, cell.value);
+                }
+            }
+        }
+        if (MIN_TERRAIN_COST_FACTOR >= std::numeric_limits<float>::max()) {
+            return resultPath; // No passable cells
+        }
 
         // --- Initialization ---
         g_scores[startIdx] = 0.0f;

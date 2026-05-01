@@ -184,9 +184,23 @@ namespace Pathfinding {
             };
         std::priority_queue<int, std::vector<int>, decltype(cmp)> openQueue(cmp);
 
-        // --- Constants --- (Same as Theta*)
+        // --- Constants ---
         const float infinite_penalty = std::numeric_limits<float>::max();
-        const float MIN_TERRAIN_COST_FACTOR = 0.5f;
+
+        // Compute the minimum terrain cost across all passable cells at runtime for an
+        // admissible heuristic. Fall back gracefully if no passable cells are found.
+        float MIN_TERRAIN_COST_FACTOR = std::numeric_limits<float>::max();
+        for (int cy = 0; cy < log_height; ++cy) {
+            for (int cx = 0; cx < log_width; ++cx) {
+                const GridCellData& cell = logical_grid.at(cx, cy);
+                if (!cell.hasFlag(GridFlags::FLAG_IMPASSABLE) && cell.value > 0.0f) {
+                    MIN_TERRAIN_COST_FACTOR = std::min(MIN_TERRAIN_COST_FACTOR, cell.value);
+                }
+            }
+        }
+        if (MIN_TERRAIN_COST_FACTOR >= std::numeric_limits<float>::max()) {
+            return resultPath; // No passable cells
+        }
 
         // --- Initialization --- (Same as Theta*)
         g_scores[startIdx] = 0.0f;

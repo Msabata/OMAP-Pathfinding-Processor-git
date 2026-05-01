@@ -42,8 +42,8 @@ struct ElevationSampler {
         if (resolution <= 1e-6f) { // Use epsilon for float comparison
             throw std::invalid_argument("ElevationSampler: Resolution must be positive. Got " + std::to_string(resolution));
         }
-        if (static_cast<size_t>(width * height) != data.size()) {
-            throw std::invalid_argument("ElevationSampler: Data size (" + std::to_string(data.size()) + ") does not match dimensions (" + std::to_string(width) + "x" + std::to_string(height) + "=" + std::to_string(width * height) + ")");
+        if (static_cast<size_t>(width) * static_cast<size_t>(height) != data.size()) {
+            throw std::invalid_argument("ElevationSampler: Data size (" + std::to_string(data.size()) + ") does not match dimensions (" + std::to_string(width) + "x" + std::to_string(height) + "=" + std::to_string(static_cast<size_t>(width) * static_cast<size_t>(height)) + ")");
         }
     }
 
