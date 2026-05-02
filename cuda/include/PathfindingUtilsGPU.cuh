@@ -84,6 +84,8 @@ __device__ inline float getElevationAtDevice(
     if (fabsf(elevInfo->resolution) < EPSILON_GPU) return 0.0f;
     float grid_x_f = rel_x * elevInfo->inv_resolution;
     float grid_y_f = rel_y * elevInfo->inv_resolution;
+    // int x0/y0 hold the floor of the fractional grid coordinate; the cast is explicit
+    // to silence potential compiler warnings about float-to-int truncation.
     int x0 = static_cast<int>(floorf(grid_x_f));
     int y0 = static_cast<int>(floorf(grid_y_f));
     int ix0 = max(0, min(x0, elevInfo->width - 1));

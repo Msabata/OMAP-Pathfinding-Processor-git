@@ -188,7 +188,9 @@ namespace Pathfinding {
         const float infinite_penalty = std::numeric_limits<float>::max();
 
         // Compute the minimum terrain cost across all passable cells at runtime for an
-        // admissible heuristic. Fall back gracefully if no passable cells are found.
+        // admissible heuristic. Only cells with value > 0.0f are considered: zero- or
+        // negative-valued cells are treated as having no traversal cost to calculate,
+        // so they are excluded from the minimum.
         float MIN_TERRAIN_COST_FACTOR = std::numeric_limits<float>::max();
         for (int cy = 0; cy < log_height; ++cy) {
             for (int cx = 0; cx < log_width; ++cx) {
