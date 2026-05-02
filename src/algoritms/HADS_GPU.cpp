@@ -89,7 +89,7 @@ std::vector<int> findPathGPU_HADS(
     size_t log_size = static_cast<size_t>(log_width) * log_height;
     size_t elev_size = elevation_values.size();
 
-    if (static_cast<size_t>(elevation_width * elevation_height) != elev_size) {
+    if (static_cast<size_t>(elevation_width) * static_cast<size_t>(elevation_height) != elev_size) {
         fprintf(stderr, "HADS_GPU Error: Elevation data size mismatch.\n"); return {};
     }
     if (!logical_grid.inBounds(start.x, start.y) || !logical_grid.inBounds(end.x, end.y)) {

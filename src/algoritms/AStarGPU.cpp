@@ -70,7 +70,7 @@ std::vector<int> findPathGPU_AStar(
     int log_height = static_cast<int>(logical_grid.height());
     size_t log_size = static_cast<size_t>(log_width) * log_height;
     size_t elev_size = elevation_values.size();
-    if (static_cast<size_t>(elevation_width * elevation_height) != elev_size) return {};
+    if (static_cast<size_t>(elevation_width) * static_cast<size_t>(elevation_height) != elev_size) return {};
     if (!logical_grid.inBounds(start.x, start.y) || !logical_grid.inBounds(end.x, end.y)) return {};
     int startIdx = start.y * log_width + start.x;
     int endIdx = end.y * log_width + end.x;

@@ -21,6 +21,8 @@ namespace PathfindingUtilsGPU {
 // Bring shared device helpers into scope for unqualified use in kernels
 using PathfindingUtilsGPU::toIndexGPU;
 using PathfindingUtilsGPU::toCoordsGPU;
+using PathfindingUtilsGPU::D_DX_DEV;
+using PathfindingUtilsGPU::D_DY_DEV;
 
 //===========================================================
 // Kernel: relax light edges
