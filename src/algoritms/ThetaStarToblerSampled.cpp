@@ -12,6 +12,7 @@
 #include <string>   // For error messages
 #include <functional> // For std::function if needed, or lambda captures
 #include <cstdlib>    // For abs(int)
+#include <algorithm>  // For std::min
 #include <tuple>      // For std::tuple PQ entry type
 
 // Use namespaces if desired
@@ -323,7 +324,8 @@ namespace Pathfinding {
 
         // --- Theta* Main Loop ---
         while (!openQueue.empty()) {
-            auto [cur_f, cur_g, currentIdx] = openQueue.top();
+            const PQEntry currentEntry = openQueue.top();
+            const int currentIdx = std::get<2>(currentEntry);
             openQueue.pop();
 
             if (currentIdx == endIdx) { break; } // Goal reached

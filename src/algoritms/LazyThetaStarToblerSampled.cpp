@@ -214,7 +214,8 @@ namespace Pathfinding {
 
         // --- Lazy Theta* Main Loop ---
         while (!openQueue.empty()) {
-            auto [cur_f, cur_g, currentIdx] = openQueue.top();
+            const PQEntry currentEntry = openQueue.top();
+            const int currentIdx = std::get<2>(currentEntry);
             openQueue.pop();
 
             // Check if already processed (can happen if node added multiple times)
