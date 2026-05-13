@@ -78,46 +78,50 @@ namespace Pathfinding {
         static thread_local std::vector<float> f_scores;
         static thread_local std::vector<bool> closed;
         static thread_local std::vector<int> parents;
+        static thread_local std::vector<float> cell_elevation;
         try {
             g_scores.assign(log_size, std::numeric_limits<float>::max());
             f_scores.assign(log_size, std::numeric_limits<float>::max());
             closed.assign(log_size, false);
             parents.assign(log_size, -1);
+            cell_elevation.resize(static_cast<size_t>(log_size));
         }
         catch (const std::bad_alloc&) { return resultPath; }
 
-        // --- Priority Queue ---
-        auto cmp = [&](int l, int r) {
-            if (std::fabs(f_scores[l] - f_scores[r]) > EPSILON) return f_scores[l] > f_scores[r];
-            return g_scores[l] > g_scores[r];
-            };
-        std::priority_queue<int, std::vector<int>, decltype(cmp)> openQueue(cmp);
+        // Precompute elevation for every cell centre once to avoid repeated sampling.
+        for (int cy = 0; cy < log_height; ++cy) {
+            for (int cx = 0; cx < log_width; ++cx) {
+                float wx = (static_cast<float>(cx) + 0.5f) * log_cell_resolution;
+                float wy = (static_cast<float>(cy) + 0.5f) * log_cell_resolution;
+                cell_elevation[toIndex(cx, cy, log_width)] = elevation_sampler.getElevationAt(wx, wy);
+            }
+        }
+
+        // --- Priority Queue: store (f_score, node_index) pairs to avoid stale comparator captures ---
+        using PQEntry = std::pair<float, int>;
+        std::priority_queue<PQEntry, std::vector<PQEntry>, std::greater<PQEntry>> openQueue;
 
         // --- Initialization ---
         g_scores[startIdx] = 0.0f;
-        f_scores[startIdx] = calculate_heuristic(start.x, start.y, end.x, end.y, heuristic_type);
-        openQueue.push(startIdx);
-
-        const float infinite_penalty = std::numeric_limits<float>::max();
-        const float log_diag_dist = log_cell_resolution * costs[4];
+        float h_start = calculate_heuristic(start.x, start.y, end.x, end.y, heuristic_type);
+        f_scores[startIdx] = h_start;
+        openQueue.push({h_start, startIdx});
 
         // --- A* Main Loop ---
         while (!openQueue.empty()) {
-            const int currentIdx = openQueue.top();
+            auto [current_f, currentIdx] = openQueue.top();
             openQueue.pop();
 
             if (currentIdx == endIdx) { break; }
-            if (closed[currentIdx]) { continue; }
+            if (closed[currentIdx]) { continue; } // stale entry
             closed[currentIdx] = true;
 
             int x, y;
             toCoords(currentIdx, log_width, x, y);
             const float current_g = g_scores[currentIdx];
 
-            // --- Get Current Elevation ---
-            float world_x_curr = (static_cast<float>(x) + 0.5f) * log_cell_resolution;
-            float world_y_curr = (static_cast<float>(y) + 0.5f) * log_cell_resolution;
-            float current_elevation = elevation_sampler.getElevationAt(world_x_curr, world_y_curr);
+            // Lookup precomputed elevation for current cell.
+            float current_elevation = cell_elevation[currentIdx];
 
             // --- Explore Neighbors ---
             for (int dir = 0; dir < NUM_DIRECTIONS; ++dir) {
@@ -132,25 +136,11 @@ namespace Pathfinding {
                 // Obstacle Check
                 if (neighborCell.value <= 0.0f || neighborCell.hasFlag(GridFlags::FLAG_IMPASSABLE)) { continue; }
 
-                // --- Cost Calculation ---
-                // A. Slope
-                float world_x_neigh = (static_cast<float>(nx) + 0.5f) * log_cell_resolution;
-                float world_y_neigh = (static_cast<float>(ny) + 0.5f) * log_cell_resolution;
-                float neighbor_elevation = elevation_sampler.getElevationAt(world_x_neigh, world_y_neigh);
+                // --- Cost Calculation via shared Tobler function ---
+                float neighbor_elevation = cell_elevation[neighborIdx];
                 float delta_h = neighbor_elevation - current_elevation;
-                float delta_dist_world = (dir < 4) ? log_cell_resolution : log_diag_dist;
-                float S = (delta_dist_world > EPSILON) ? (delta_h / delta_dist_world) : 0.0f;
-
-                // B. Tobler's Factor
-                float SlopeFactor = expf(-3.5f * fabsf(S + 0.05f));
-
-                // C. Final Cost
-                float time_penalty = (SlopeFactor > EPSILON) ? (1.0f / SlopeFactor) : infinite_penalty;
-                if (time_penalty >= infinite_penalty) { continue; }
-
-                float base_terrain_cost = neighborCell.value;
-                float base_geometric_cost = costs[dir];
-                float final_move_cost = base_geometric_cost * base_terrain_cost * time_penalty;
+                float final_move_cost = toblerEdgeCost(dir, log_cell_resolution, delta_h, neighborCell.value);
+                if (final_move_cost >= std::numeric_limits<float>::max()) { continue; }
 
                 // --- Update Neighbor ---
                 float tentative_g = current_g + final_move_cost;
@@ -158,8 +148,9 @@ namespace Pathfinding {
                 if (tentative_g < g_scores[neighborIdx]) {
                     parents[neighborIdx] = currentIdx;
                     g_scores[neighborIdx] = tentative_g;
-                    f_scores[neighborIdx] = tentative_g + calculate_heuristic(nx, ny, end.x, end.y, heuristic_type);
-                    openQueue.push(neighborIdx);
+                    float new_f = tentative_g + calculate_heuristic(nx, ny, end.x, end.y, heuristic_type);
+                    f_scores[neighborIdx] = new_f;
+                    openQueue.push({new_f, neighborIdx});
                 }
             } // End neighbor loop
         } // End while openQueue not empty

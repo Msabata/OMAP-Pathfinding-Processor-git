@@ -77,9 +77,9 @@ std::vector<int> findPathGPU_DeltaStepping(
     size_t log_size = static_cast<size_t>(log_width) * log_height;
     size_t elev_size = elevation_values.size();
 
-    if (static_cast<size_t>(elevation_width * elevation_height) != elev_size) {
+    if (static_cast<size_t>(elevation_width) * static_cast<size_t>(elevation_height) != elev_size) {
         fprintf(stderr, "DeltaSteppingGPU Error: Elevation data size (%zu) mismatch with dimensions (%d x %d = %zu).\n",
-            elev_size, elevation_width, elevation_height, static_cast<size_t>(elevation_width * elevation_height)); return {};
+            elev_size, elevation_width, elevation_height, static_cast<size_t>(elevation_width) * static_cast<size_t>(elevation_height)); return {};
     }
     if (!logical_grid.inBounds(start.x, start.y) || !logical_grid.inBounds(end.x, end.y)) {
         fprintf(stderr, "DeltaSteppingGPU Error: Start or End point out of logical grid bounds.\n"); return {};

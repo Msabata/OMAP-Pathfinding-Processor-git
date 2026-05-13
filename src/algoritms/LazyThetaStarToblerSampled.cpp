@@ -13,6 +13,7 @@
 #include <functional>
 #include <cstdlib>
 #include <algorithm> // For std::reverse
+#include <tuple>     // For std::tuple PQ entry type
 
 // Use namespaces if desired
 using namespace mapgeo;
@@ -119,7 +120,10 @@ namespace Pathfinding {
                 if (delta_dist_world > numeric_traits<float>::epsilon) {
                     float S = delta_h / delta_dist_world;
                     float SlopeFactor = expf(-3.5f * fabsf(S + 0.05f));
-                    float time_penalty = (SlopeFactor > numeric_traits<float>::epsilon) ? (1.0f / SlopeFactor) : infinite_penalty_ref;
+                    // Cap extreme slope penalties rather than hard-blocking (mirrors toblerEdgeCost).
+                    float time_penalty = (SlopeFactor > numeric_traits<float>::epsilon)
+                        ? std::min(1.0f / SlopeFactor, MAX_TOBLER_PENALTY)
+                        : infinite_penalty_ref;
                     if (time_penalty >= infinite_penalty_ref) return infinite_penalty_ref;
                     float terrain_cost = current_cell_data.value;
                     total_cost += delta_dist_world * time_penalty * terrain_cost;
@@ -177,25 +181,41 @@ namespace Pathfinding {
         }
         catch (const std::bad_alloc&) { return resultPath; }
 
-        // --- Priority Queue --- (Same as Theta*)
-        auto cmp = [&](int l, int r) {
-            if (std::fabs(f_scores[l] - f_scores[r]) > numeric_traits<float>::epsilon) return f_scores[l] > f_scores[r];
-            return g_scores[l] > g_scores[r];
-            };
-        std::priority_queue<int, std::vector<int>, decltype(cmp)> openQueue(cmp);
+        // --- Priority Queue: store (f, g, idx) tuples so ordering is based on values at enqueue
+        //     time, not mutable state, avoiding stale-comparator bugs.
+        //     Min-heap: prefer lower f, tie-break with lower g.
+        using PQEntry = std::tuple<float, float, int>;
+        std::priority_queue<PQEntry, std::vector<PQEntry>, std::greater<PQEntry>> openQueue;
 
-        // --- Constants --- (Same as Theta*)
+        // --- Constants ---
         const float infinite_penalty = std::numeric_limits<float>::max();
-        const float MIN_TERRAIN_COST_FACTOR = 0.5f;
+
+        // Compute the minimum terrain cost across all passable cells at runtime for an
+        // admissible heuristic. Only cells with value > 0.0f are considered: zero- or
+        // negative-valued cells are treated as having no traversal cost to calculate,
+        // so they are excluded from the minimum.
+        float MIN_TERRAIN_COST_FACTOR = std::numeric_limits<float>::max();
+        for (int cy = 0; cy < log_height; ++cy) {
+            for (int cx = 0; cx < log_width; ++cx) {
+                const GridCellData& cell = logical_grid.at(cx, cy);
+                if (!cell.hasFlag(GridFlags::FLAG_IMPASSABLE) && cell.value > 0.0f) {
+                    MIN_TERRAIN_COST_FACTOR = std::min(MIN_TERRAIN_COST_FACTOR, cell.value);
+                }
+            }
+        }
+        if (MIN_TERRAIN_COST_FACTOR >= std::numeric_limits<float>::max()) {
+            return resultPath; // No passable cells
+        }
 
         // --- Initialization --- (Same as Theta*)
         g_scores[startIdx] = 0.0f;
         f_scores[startIdx] = calculate_theta_heuristic(start.x, start.y, end.x, end.y, log_cell_resolution, MIN_TERRAIN_COST_FACTOR);
-        openQueue.push(startIdx);
+        openQueue.push({f_scores[startIdx], 0.0f, startIdx});
 
         // --- Lazy Theta* Main Loop ---
         while (!openQueue.empty()) {
-            const int currentIdx = openQueue.top();
+            const PQEntry currentEntry = openQueue.top();
+            const int currentIdx = std::get<2>(currentEntry);
             openQueue.pop();
 
             // Check if already processed (can happen if node added multiple times)
@@ -286,7 +306,7 @@ namespace Pathfinding {
                     g_scores[neighborIdx] = tentative_g;
                     f_scores[neighborIdx] = tentative_g + calculate_theta_heuristic(
                         nx, ny, end.x, end.y, log_cell_resolution, MIN_TERRAIN_COST_FACTOR);
-                    openQueue.push(neighborIdx);
+                    openQueue.push({f_scores[neighborIdx], tentative_g, neighborIdx});
                 }
             } // End neighbor loop
         } // End while openQueue not empty
